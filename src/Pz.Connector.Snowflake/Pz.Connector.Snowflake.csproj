@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Snowflake source and sink connector (typed Arrow reader, stage+COPY sink) for PipelineZ (pz).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Pz.Connectors.Abstractions" Version="0.3.0" />
+    <PackageReference Include="Snowflake.Data" Version="6.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Pz.Connector.Snowflake.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The pz connector host reads pz.connector.json from the ROOT of the materialized package
+         directory (its pre-load protocol handshake), so the manifest must pack at PackagePath="". -->
+    <None Include="pz.connector.json" Pack="true" PackagePath="" />
+  </ItemGroup>
+
+</Project>

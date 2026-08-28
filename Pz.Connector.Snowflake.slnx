@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Pz.Connector.Snowflake/Pz.Connector.Snowflake.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Pz.Connector.Snowflake.Tests/Pz.Connector.Snowflake.Tests.csproj" />
+  </Folder>
+</Solution>

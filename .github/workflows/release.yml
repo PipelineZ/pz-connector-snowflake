@@ -1,0 +1,47 @@
+# NuGet trusted publishing (OIDC) -- no long-lived API key secret is stored in this repo.
+# MANUAL PREREQUISITES (one-time):
+#   1. On nuget.org (https://www.nuget.org/account/trustedpublishing -> Add policy), create a trusted
+#      publishing policy naming this repository's owner/name, this exact workflow filename
+#      ("release.yml", no path), and environment "release". Scope it to the package id
+#      "Pz.Connector.Snowflake" with the "Push new packages and package versions" scope -- not
+#      "push only new package versions", which cannot create an id that does not exist yet.
+#   2. Create a GitHub Environment named "release" (repo Settings -> Environments) and add an
+#      environment secret NUGET_USER = the nuget.org profile name (NOT email) of the account that
+#      owns the policy.
+# Until that setup exists, a `v*` tag push fails at the NuGet/login step with an authentication
+# error -- expected, not a workflow bug.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # required for NuGet/login's OIDC exchange.
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # MinVer computes the release version from this tag + history.
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - run: dotnet build Pz.Connector.Snowflake.slnx -c Release
+      - run: dotnet test Pz.Connector.Snowflake.slnx -c Release --no-build --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
+      - run: dotnet pack Pz.Connector.Snowflake.slnx -c Release -o packages --no-build
+      - name: NuGet login (trusted publishing)
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+      - name: Push package to nuget.org
+        run: >
+          dotnet nuget push 'packages/*.nupkg'
+          --source https://api.nuget.org/v3/index.json
+          --api-key ${{ steps.login.outputs.NUGET_API_KEY }}
+          --skip-duplicate
