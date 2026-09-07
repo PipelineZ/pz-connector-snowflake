@@ -69,7 +69,9 @@ jobs:
           mkdir -p secrets && : > secrets/rsa_key.p8
           pz restore --feeds "${GITHUB_WORKSPACE}/packages"
           PKG_DIR=".pz/packages/Pz.Connector.Snowflake/${PKG_VERSION}"
-          test -x "${PKG_DIR}/native/Pz.Connector.Snowflake"
+          # -f, not -x: pz materializes the entrypoint as a plain file and sets the executable bit
+          # when it resolves it to spawn; the compile/validate/conformance steps prove the spawn.
+          test -f "${PKG_DIR}/native/Pz.Connector.Snowflake"
           pz compile
           pz validate
           pz connector test "${PKG_DIR}" --config probe.yml | tee report.txt
