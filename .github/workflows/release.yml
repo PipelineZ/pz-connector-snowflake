@@ -19,7 +19,7 @@ on:
 jobs:
   release:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     environment: release
     permissions:
       contents: read
@@ -33,7 +33,34 @@ jobs:
           dotnet-version: '10.0.x'
       - run: dotnet build Pz.Connector.Snowflake.slnx -c Release
       - run: dotnet test Pz.Connector.Snowflake.slnx -c Release --no-build --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
-      - run: dotnet pack Pz.Connector.Snowflake.slnx -c Release -o packages --no-build
+      # One self-contained single-file publish per RID the package ships; pack collects them all
+      # (the SDK's PzRuntimeIdentifiers default) and writes the manifest by running the linux-x64 binary.
+      # A separate `restore -r` before `publish -r --no-restore` is required on a cold NuGet cache:
+      # the restore folded into `publish -r` alone does not pull the RID-specific runtime pack this
+      # self-contained build needs (NETSDK1112), even though the same restore run standalone does.
+      - run: |
+          set -euo pipefail
+          for rid in linux-x64 linux-arm64 osx-arm64 win-x64; do
+            dotnet restore src/Pz.Connector.Snowflake -r "$rid"
+            dotnet publish src/Pz.Connector.Snowflake -c Release -r "$rid" --no-restore
+          done
+          dotnet pack src/Pz.Connector.Snowflake -c Release -o packages
+      # The manifest is what `pz restore` reads: a wrong runtime, name, anchor or capability set, or
+      # a RID whose entrypoint never made it into the pack, is only discovered by whoever installs
+      # the release. Assert it here, while the push has not happened and a version can still be
+      # skipped -- a pushed nuget.org version cannot be replaced.
+      - name: Assert the packed manifest before publishing
+        run: |
+          set -euo pipefail
+          VERSION="$(ls packages/Pz.Connector.Snowflake.*.nupkg | sed -E 's|.*/Pz\.Connector\.Snowflake\.(.*)\.nupkg|\1|')"
+          unzip -p "packages/Pz.Connector.Snowflake.${VERSION}.nupkg" pz.connector.json | tee manifest.json
+          grep -q '"runtime": "process"' manifest.json
+          grep -q '"name": "snowflake"' manifest.json
+          grep -q '"projectDirectoryAnchor": true' manifest.json
+          grep -q '"Merge"' manifest.json
+          for rid in linux-x64 linux-arm64 osx-arm64 win-x64; do
+            grep -q "\"${rid}\":" manifest.json
+          done
       - name: NuGet login (trusted publishing)
         id: login
         uses: NuGet/login@v1

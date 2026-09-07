@@ -33,6 +33,41 @@ public class SnowflakeConnectorTests
     }
 
     [Fact]
+    public void Relative_private_key_path_resolves_against_base_dir()
+    {
+        // pz injects base_dir (the project directory) because the manifest declares a
+        // project-directory anchor; the connector process's own working directory is not the
+        // project's, so a relative key path anchored anywhere else would point at nothing.
+        var baseDir = Path.Combine(Path.GetTempPath(), "pz-snowflake-project");
+        var config = Config(
+            ("account", "a"), ("user", "u"), ("private_key_path", Path.Combine("secrets", "rsa_key.p8")),
+            ("database", "d"), ("warehouse", "w"), ("base_dir", baseDir));
+        var parsed = Parse(SnowflakeConnector.BuildConnectionString(config));
+        Assert.Equal(Path.Combine(baseDir, "secrets", "rsa_key.p8"), parsed["private_key_file"]);
+    }
+
+    [Fact]
+    public void Absolute_private_key_path_ignores_base_dir()
+    {
+        var absolute = Path.Combine(Path.GetTempPath(), "keys", "pz.p8");
+        var config = Config(
+            ("account", "a"), ("user", "u"), ("private_key_path", absolute),
+            ("database", "d"), ("warehouse", "w"), ("base_dir", Path.Combine(Path.GetTempPath(), "elsewhere")));
+        var parsed = Parse(SnowflakeConnector.BuildConnectionString(config));
+        Assert.Equal(absolute, parsed["private_key_file"]);
+    }
+
+    [Fact]
+    public void Relative_private_key_path_without_base_dir_is_passed_through()
+    {
+        var config = Config(
+            ("account", "a"), ("user", "u"), ("private_key_path", "rsa_key.p8"),
+            ("database", "d"), ("warehouse", "w"));
+        var parsed = Parse(SnowflakeConnector.BuildConnectionString(config));
+        Assert.Equal("rsa_key.p8", parsed["private_key_file"]);
+    }
+
+    [Fact]
     public void Optional_role_and_passphrase_flow_through()
     {
         var config = Config(

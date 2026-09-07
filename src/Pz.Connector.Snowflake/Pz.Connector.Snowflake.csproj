@@ -1,22 +1,24 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>Snowflake source and sink connector (typed Arrow reader, stage+COPY sink) for PipelineZ (pz).</Description>
+    <OutputType>Exe</OutputType>
+    <Description>Snowflake source and sink connector (typed Arrow reader, stage+COPY sink) for PipelineZ (pz), served out of process.</Description>
+    <!-- Snowflake.Data binds through reflection (Newtonsoft.Json, its own driver plumbing) and has no
+         Native AOT support, so this connector ships as a self-contained single-file CoreCLR binary. -->
+    <PzPackaging>self-contained</PzPackaging>
+    <!-- private_key_path is a project-relative path. -->
+    <PzProjectDirectoryAnchor>true</PzProjectDirectoryAnchor>
+    <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Pz.Connectors.Abstractions" Version="0.3.0" />
+    <PackageReference Include="Pz.Connectors.Sdk" Version="0.5.1" />
+    <PackageReference Include="Pz.Connectors.Abstractions" Version="0.5.1" />
     <PackageReference Include="Snowflake.Data" Version="6.0.0" />
   </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="Pz.Connector.Snowflake.Tests" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <!-- The pz connector host reads pz.connector.json from the ROOT of the materialized package
-         directory (its pre-load protocol handshake), so the manifest must pack at PackagePath="". -->
-    <None Include="pz.connector.json" Pack="true" PackagePath="" />
   </ItemGroup>
 
 </Project>

@@ -1,0 +1,7 @@
+name: snowflake_e2e
+version: 0.1.0
+
+# Restored from the local feed ci.yml packs; the placeholder is rewritten to the packed version.
+connectors:
+  - package: Pz.Connector.Snowflake
+    version: 0.0.0-PLACEHOLDER

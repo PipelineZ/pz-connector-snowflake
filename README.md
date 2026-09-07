@@ -15,13 +15,25 @@ acceptance (below), since no Snowflake container/emulator exists for Testcontain
 ## Installation
 
 Declare the package in your project's `project.yml` and run `pz restore` — pz resolves it from
-nuget.org, records it in `pz.lock.json`, and loads it in its own isolated `AssemblyLoadContext`:
+nuget.org, records it in `pz.lock.json`, and materializes the connector binary for your platform:
 
 ```yaml
 connectors:
   - package: Pz.Connector.Snowflake
-    version: 0.1.0
+    version: 0.2.0
 ```
+
+**Requires pz 0.5.1 or newer.** The connector runs in its own process (PZ0360): pz spawns the
+self-contained binary the package ships for your platform and talks to it over the connector
+process protocol (PCP); nothing from this package is loaded into pz. It is built on
+[`Pz.Connectors.Sdk`](https://www.nuget.org/packages/Pz.Connectors.Sdk) 0.5.1 and compiles against
+`Pz.Connectors.Abstractions` 0.5.1.
+
+The package ships `linux-x64`, `linux-arm64`, `osx-arm64` and `win-x64`, as a 203 MB download of
+which `pz restore` materializes only your platform's ~55 MB. It is self-contained rather than Native
+AOT because `Snowflake.Data` binds through reflection. Only `linux-x64` has been exercised through pz
+end to end (CI's `pack-and-verify` job restores, compiles, validates, and runs the PCP conformance
+vectors against the packed package); the unit and acceptance suites run on Linux and Windows.
 
 This page is the connector's own reference. For the *why* behind the ABI it implements, see
 [Connectors](https://pipelinez.dev/concepts/connectors/); for the authoring surface (`connections.yml`,
@@ -54,7 +66,7 @@ wh:
   connector: snowflake
   account: myorg-myaccount              # required
   user: pz_svc                          # required
-  private_key_path: /secrets/rsa_key.p8 # required
+  private_key_path: secrets/rsa_key.p8  # required; relative paths resolve against the project directory
   database: analytics                   # required
   warehouse: compute_wh                 # required
   private_key_passphrase: ...           # optional, if the key is encrypted
@@ -62,7 +74,11 @@ wh:
 ```
 
 `account`/`user`/`private_key_path`/`database`/`warehouse` are the required keys
-(`ConnectionConfigSchema` rejects anything else — `additionalProperties: false`). There is no
+(`ConnectionConfigSchema` rejects anything else — `additionalProperties: false`). A relative
+`private_key_path` is anchored on the project directory: the package manifest declares a
+project-directory anchor, so pz passes the project directory to the connector as `base_dir` and the
+connector resolves the key path against it rather than against the working directory of a process
+you never launched. An absolute path is used as written. There is no
 `password` key: `SnowflakeConnector.BuildConnectionString` always sets
 `authenticator=snowflake_jwt` and points the driver at the private key file — key-pair auth is the
 only supported credential shape. `application=pz` is always stamped.
@@ -251,6 +267,7 @@ malformed entity name (not `SCHEMA.TABLE` or `TABLE`), `schema_policy: evolve`.
 
 ```
 src/Pz.Connector.Snowflake/
+├── Program.cs                 # PzConnectorHost.RunAsync: serves the connector over PCP, prints the manifest
 ├── SnowflakeConnector.cs      # IConnector/ISourceConnector/ISinkConnector, JWT connection string, manifest identity
 ├── SnowflakeSource.cs         # ISource: SELECT generation, schema probe, single-partition read
 ├── SnowflakeArrowReader.cs    # typed, boxing-free DbDataReader → Arrow RecordBatch reader
@@ -258,13 +275,25 @@ src/Pz.Connector.Snowflake/
 ├── SfDdl.cs                   # identifier quoting, entity-name splitting, DDL/MERGE SQL generation, schema_policy drift check
 ├── SfCsv.cs                   # sink's spool-file CSV encoding + matching COPY FILE_FORMAT clause
 ├── SfTypeMap.cs               # Snowflake ↔ Arrow type matrix (read resolution + DDL/information_schema rendering)
-├── SfErrors.cs                # transience classification for engine retries
-└── pz.connector.json           # manifest: name "snowflake", protocol major range, capabilities [source, sink]
+└── SfErrors.cs                # transience classification for engine retries
 ```
 
-The package embeds `pz.connector.json` at its root (readable without loading the assembly — an
-incompatible protocol version is rejected before any package code runs); see [Connectors: discovery,
-packaging, and restore](https://pipelinez.dev/concepts/connectors/#discovery-packaging-and-restore).
+The manifest, `pz.connector.json`, is not a source file: `dotnet pack` runs the published binary in
+`--pz-manifest` mode and ships what it prints at the package root, so the manifest (name, protocol
+range, capabilities, `runtime: "process"`, the per-platform entrypoints, the project-directory
+anchor) and the PCP handshake come from one object. See [Connectors: discovery, packaging, and
+restore](https://pipelinez.dev/concepts/connectors/#discovery-packaging-and-restore) and
+[Author a connector](https://pipelinez.dev/how-to/author-a-connector/).
+
+Packaging a release publishes one self-contained binary per platform, then packs:
+
+```bash
+for rid in linux-x64 linux-arm64 osx-arm64 win-x64; do
+  dotnet restore src/Pz.Connector.Snowflake -r "$rid"
+  dotnet publish src/Pz.Connector.Snowflake -c Release -r "$rid" --no-restore
+done
+dotnet pack src/Pz.Connector.Snowflake -c Release -o packages
+```
 
 ## Testing
 
