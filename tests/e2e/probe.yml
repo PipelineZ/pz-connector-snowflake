@@ -1,0 +1,9 @@
+# `pz connector test --config`: a connection block only. Without an account the read/write vectors
+# cannot be probed, so what runs is the handshake, validation aggregation, message-size and
+# clean-exit vectors -- the ones that prove the package spawns and speaks PCP.
+connection:
+  account: myorg-myacct
+  user: PZ_SVC
+  private_key_path: secrets/rsa_key.p8
+  database: ANALYTICS
+  warehouse: PZ_WH

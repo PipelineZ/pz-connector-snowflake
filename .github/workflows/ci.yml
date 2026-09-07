@@ -27,3 +27,54 @@ jobs:
       # The acceptance suites gate on PZ_SNOWFLAKE_* env vars and SKIP without an account, so the
       # full suite runs on both legs with no credentials configured.
       - run: dotnet test Pz.Connector.Snowflake.slnx -c Release --no-build --blame-hang --blame-hang-timeout 10m --blame-hang-dump-type mini
+
+  # The other half of the proof: that a stranger can declare this connector by package id, run
+  # `pz restore`, and have pz spawn it. The suite above never touches pz's resolver, materializer or
+  # process host. No Snowflake account is reachable here, so the project is compiled and validated
+  # rather than run, and the conformance vectors that need a live read/write probe are skipped.
+  pack-and-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Publish the host RID and pack
+        run: |
+          set -euo pipefail
+          # A separate `restore -r` before `publish -r --no-restore` is required on a cold NuGet
+          # cache: the restore folded into `publish -r` alone does not pull the RID-specific runtime
+          # pack this self-contained build needs (NETSDK1112), even though the same restore run
+          # standalone does.
+          dotnet restore src/Pz.Connector.Snowflake -r linux-x64
+          dotnet publish src/Pz.Connector.Snowflake -c Release -r linux-x64 --no-restore
+          dotnet pack src/Pz.Connector.Snowflake -c Release -o packages
+          ls packages
+          VERSION="$(ls packages/Pz.Connector.Snowflake.*.nupkg | sed -E 's|.*/Pz\.Connector\.Snowflake\.(.*)\.nupkg|\1|')"
+          echo "PKG_VERSION=${VERSION}" >> "$GITHUB_ENV"
+          unzip -p "packages/Pz.Connector.Snowflake.${VERSION}.nupkg" pz.connector.json | tee manifest.json
+          grep -q '"runtime": "process"' manifest.json
+          grep -q '"name": "snowflake"' manifest.json
+          grep -q '"projectDirectoryAnchor": true' manifest.json
+          grep -q '"Merge"' manifest.json
+      - name: Install pz, restore from the local feed, compile, validate, conformance-test
+        run: |
+          set -euo pipefail
+          dotnet tool install --global pz --version 0.5.1
+          cd tests/e2e
+          sed -i "s/0.0.0-PLACEHOLDER/${PKG_VERSION}/" project.yml
+          mkdir -p secrets && : > secrets/rsa_key.p8
+          pz restore --feeds "${GITHUB_WORKSPACE}/packages"
+          PKG_DIR=".pz/packages/Pz.Connector.Snowflake/${PKG_VERSION}"
+          # -f, not -x: pz materializes the entrypoint as a plain file and sets the executable bit
+          # when it resolves it to spawn; the compile/validate/conformance steps prove the spawn.
+          test -f "${PKG_DIR}/native/Pz.Connector.Snowflake"
+          pz compile
+          pz validate
+          pz connector test "${PKG_DIR}" --config probe.yml | tee report.txt
+          ! grep -q '^FAIL' report.txt
+          grep -q '^PASS handshake' report.txt
+          grep -q '^PASS clean-exit-on-shutdown' report.txt

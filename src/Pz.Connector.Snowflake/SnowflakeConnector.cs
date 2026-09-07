@@ -1,13 +1,16 @@
 using Snowflake.Data.Client;
 using Pz.Connectors.Abstractions;
 
-[assembly: PzConnector("snowflake", typeof(Pz.Connector.Snowflake.SnowflakeConnector))]
 
 namespace Pz.Connector.Snowflake;
 
-/// <summary>Snowflake source + sink connector. Key-pair (JWT) authentication only -- no password
-/// auth surface. Registered under the logical name "snowflake". Connection options:
-/// account/user/private_key_path/database/warehouse required; private_key_passphrase/role optional.</summary>
+/// <summary>Snowflake source + sink connector, served out of process through Pz.Connectors.Sdk.
+/// Key-pair (JWT) authentication only -- no password auth surface. Registered under the logical name
+/// "snowflake". Connection options: account/user/private_key_path/database/warehouse required;
+/// private_key_passphrase/role optional. <c>base_dir</c> is never written by a user: the package
+/// manifest declares a project-directory anchor, so pz injects the project directory under that key
+/// and a relative <c>private_key_path</c> resolves against the project rather than against the
+/// working directory of a connector process the user never launched.</summary>
 public sealed class SnowflakeConnector : ISourceConnector, ISinkConnector
 {
     public ConnectorInfo Info => new("snowflake", "0.1.0", ProtocolVersion.Major);
@@ -18,7 +21,7 @@ public sealed class SnowflakeConnector : ISourceConnector, ISinkConnector
         ConnectorCapabilities.BoundedWindow | ConnectorCapabilities.InclusiveWatermarkBound;
 
     public string ConnectionConfigSchema =>
-        """{ "type": "object", "required": ["account","user","private_key_path","database","warehouse"], "properties": { "account": { "type": "string" }, "user": { "type": "string" }, "private_key_path": { "type": "string" }, "private_key_passphrase": { "type": "string" }, "database": { "type": "string" }, "warehouse": { "type": "string" }, "role": { "type": "string" } }, "additionalProperties": false }""";
+        """{ "type": "object", "required": ["account","user","private_key_path","database","warehouse"], "properties": { "account": { "type": "string" }, "user": { "type": "string" }, "private_key_path": { "type": "string" }, "private_key_passphrase": { "type": "string" }, "database": { "type": "string" }, "warehouse": { "type": "string" }, "role": { "type": "string" }, "base_dir": { "type": "string" } }, "additionalProperties": false }""";
 
     // "columns" is not read by SnowflakeSource today (its schema is always resolved from the
     // driver's own reported metadata via SfTypeMap, never a declared contract), but the
@@ -74,7 +77,7 @@ public sealed class SnowflakeConnector : ISourceConnector, ISinkConnector
             ["account"] = Require("account"),
             ["user"] = Require("user"),
             ["authenticator"] = "snowflake_jwt",
-            ["private_key_file"] = Require("private_key_path"),
+            ["private_key_file"] = ResolvePrivateKeyPath(config),
             ["db"] = Require("database"),
             ["warehouse"] = Require("warehouse"),
             ["application"] = "pz",
@@ -82,5 +85,19 @@ public sealed class SnowflakeConnector : ISourceConnector, ISinkConnector
         if (config.GetString("private_key_passphrase") is { } pwd) { builder["private_key_pwd"] = pwd; }
         if (config.GetString("role") is { } role) { builder["role"] = role; }
         return builder.ConnectionString;
+    }
+
+    /// <summary>A relative <c>private_key_path</c> is anchored on <c>base_dir</c> when pz supplies
+    /// one; an absolute path, or a relative one with no anchor, is handed to the driver as written.</summary>
+    internal static string ResolvePrivateKeyPath(ConnectorConfig config)
+    {
+        var path = config.GetString("private_key_path") ??
+            throw new PzConnectorException("snowflake connection requires 'private_key_path'", isTransient: false);
+        if (Path.IsPathRooted(path) || config.GetString("base_dir") is not { Length: > 0 } baseDir)
+        {
+            return path;
+        }
+
+        return Path.GetFullPath(Path.Combine(baseDir, path));
     }
 }

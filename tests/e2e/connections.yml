@@ -1,0 +1,21 @@
+# No Snowflake account is reachable from CI, so this project is compiled and validated, never run:
+# that is enough to make pz restore the package, spawn the connector binary, and drive its
+# validation and schema RPCs over PCP. The private key path is project-relative on purpose -- the
+# connector declares a project-directory anchor, and this is the path that anchor resolves.
+wh:
+  connector: snowflake
+  account: myorg-myacct
+  user: PZ_SVC
+  private_key_path: secrets/rsa_key.p8
+  database: ANALYTICS
+  warehouse: PZ_WH
+  entities:
+    orders:
+      read:
+        query: select 1 as id
+        columns:
+          id: int
+
+out:
+  connector: localfiles
+  root: out
