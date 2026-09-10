@@ -63,7 +63,7 @@ jobs:
       - name: Install pz, restore from the local feed, compile, validate, conformance-test
         run: |
           set -euo pipefail
-          dotnet tool install --global pz --version 0.6.0
+          dotnet tool install --global pz --version 0.6.1
           cd tests/e2e
           sed -i "s/0.0.0-PLACEHOLDER/${PKG_VERSION}/" project.yml
           mkdir -p secrets && : > secrets/rsa_key.p8

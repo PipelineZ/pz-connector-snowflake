@@ -26,8 +26,8 @@ connectors:
 **Requires pz 0.5.1 or newer.** The connector runs in its own process (PZ0360): pz spawns the
 self-contained binary the package ships for your platform and talks to it over the connector
 process protocol (PCP); nothing from this package is loaded into pz. It is built on
-[`Pz.Connectors.Sdk`](https://www.nuget.org/packages/Pz.Connectors.Sdk) 0.5.1 and compiles against
-`Pz.Connectors.Abstractions` 0.5.1.
+[`Pz.Connectors.Sdk`](https://www.nuget.org/packages/Pz.Connectors.Sdk) 0.6.1 and compiles against
+`Pz.Connectors.Abstractions` 0.6.1.
 
 The package ships `linux-x64`, `linux-arm64`, `osx-arm64` and `win-x64`, as a 203 MB download of
 which `pz restore` materializes only your platform's ~55 MB. It is self-contained rather than Native
