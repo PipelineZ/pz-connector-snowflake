@@ -87,4 +87,33 @@ public class SnowflakeTelemetryTests
     {
         Assert.True(new SnowflakeConnector(Remote()).Capabilities.HasFlag(ConnectorCapabilities.ReportsStats));
     }
+
+    private sealed class FakeTargetIo(Dictionary<string, string> existing) : SfDdl.ITargetIo
+    {
+        public Task<string> ScalarAsync(string sql, CancellationToken ct) => Task.FromResult("DB");
+
+        public Task<Dictionary<string, string>> ColumnsAsync(string sql, CancellationToken ct) => Task.FromResult(existing);
+
+        public Task ExecuteAsync(string sql, CancellationToken ct) => Task.CompletedTask;
+    }
+
+    [Theory]
+    [InlineData(true, 2)] // current_database + information_schema read
+    [InlineData(false, 3)] // ... plus create table
+    public async Task Ensure_target_counts_its_probe_and_create_statements(bool targetExists, int statements)
+    {
+        var existing = targetExists
+            ? new Dictionary<string, string>(StringComparer.Ordinal) { ["id"] = "NUMBER(38,0)" }
+            : new Dictionary<string, string>(StringComparer.Ordinal);
+        var acc = new ConnectorStatsAccumulator();
+        using (ConnectorStats.Use(acc))
+        {
+            await SfDdl.EnsureTargetAsync(
+                new FakeTargetIo(existing), "fail_on_change", "PUBLIC", "T", OneCol, "sf.PUBLIC.T", Remote(), CancellationToken.None);
+        }
+
+        var stats = acc.Snapshot();
+        Assert.Equal(statements, stats.Requests);
+        Assert.Contains(new KeyValuePair<string, double>("snowflake.statements", statements), stats.Extras);
+    }
 }

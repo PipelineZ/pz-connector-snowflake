@@ -171,7 +171,7 @@ internal sealed class SnowflakeSinkWriteSession(
         // 'fail_on_change' mean here.
         try
         {
-            await SfDdl.EnsureTargetAsync(_connection, spec.SchemaPolicy, sfSchema, table, schema, spec.Output, ct)
+            await SfDdl.EnsureTargetAsync(_connection, spec.SchemaPolicy, sfSchema, table, schema, spec.Output, ct, remote)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not PzConnectorException and not OperationCanceledException)

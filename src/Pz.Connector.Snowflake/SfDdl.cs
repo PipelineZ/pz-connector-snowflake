@@ -1,6 +1,7 @@
 using System.Text;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Sdk;
 using Snowflake.Data.Client;
 
 namespace Pz.Connector.Snowflake;
@@ -131,9 +132,26 @@ internal static class SfDdl
     /// compare every declared column's name and canonical type against what Snowflake actually
     /// reports, aggregating every mismatch into one error (never failing on the first), mirroring
     /// <c>MsDdl.EnsureTargetAsync</c>'s shape.</summary>
-    public static async Task EnsureTargetAsync(
+    public static Task EnsureTargetAsync(
         SnowflakeDbConnection connection, string schemaPolicy, string schema, string table,
-        Schema arrowSchema, string outputName, CancellationToken ct)
+        Schema arrowSchema, string outputName, CancellationToken ct, RemoteCalls? remote = null) =>
+        EnsureTargetAsync(new ConnectionTargetIo(connection), schemaPolicy, schema, table, arrowSchema, outputName,
+            remote ?? SnowflakeConnector.Unobserved, ct);
+
+    /// <summary>The statements EnsureTargetAsync issues, behind a seam so the commit path's
+    /// statement counting is testable without a connection.</summary>
+    internal interface ITargetIo
+    {
+        Task<string> ScalarAsync(string sql, CancellationToken ct);
+
+        Task<Dictionary<string, string>> ColumnsAsync(string sql, CancellationToken ct);
+
+        Task ExecuteAsync(string sql, CancellationToken ct);
+    }
+
+    internal static async Task EnsureTargetAsync(
+        ITargetIo io, string schemaPolicy, string schema, string table,
+        Schema arrowSchema, string outputName, RemoteCalls remote, CancellationToken ct)
     {
         if (string.Equals(schemaPolicy, "evolve", StringComparison.OrdinalIgnoreCase))
         {
@@ -143,13 +161,15 @@ internal static class SfDdl
                 isTransient: false);
         }
 
-        var database = await ScalarStringAsync(connection, "select current_database()", ct).ConfigureAwait(false);
-        var existing = await LoadExistingColumnsAsync(connection, database, schema, table, ct).ConfigureAwait(false);
+        // Each of these is a real remote statement, so each is counted.
+        var database = await SfStatement.RunAsync(
+            remote, () => io.ScalarAsync("select current_database()", ct)).ConfigureAwait(false);
+        var existing = await SfStatement.RunAsync(
+            remote, () => io.ColumnsAsync(ExistingColumnsSql(database, schema, table), ct)).ConfigureAwait(false);
         if (existing.Count == 0)
         {
-            await using var create = connection.CreateCommand();
-            create.CommandText = BuildCreateTableSql(schema, table, arrowSchema);
-            await create.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            await SfStatement.RunAsync(
+                remote, () => io.ExecuteAsync(BuildCreateTableSql(schema, table, arrowSchema), ct)).ConfigureAwait(false);
             return;
         }
 
@@ -185,13 +205,30 @@ internal static class SfDdl
     /// uppercased): every object pz creates is double-quoted (<see cref="Quote"/>), and Snowflake
     /// stores a quoted identifier's case exactly as given -- unlike an unquoted one, which it would
     /// fold to uppercase.</summary>
-    private static async Task<Dictionary<string, string>> LoadExistingColumnsAsync(
-        SnowflakeDbConnection connection, string database, string schema, string table, CancellationToken ct)
+    private static string ExistingColumnsSql(string database, string schema, string table) =>
+        "select column_name, data_type, numeric_precision, numeric_scale, datetime_precision " +
+        $"from {Quote(database)}.information_schema.columns " +
+        $"where table_schema = {Literal(schema)} and table_name = {Literal(table)}";
+
+    private sealed class ConnectionTargetIo(SnowflakeDbConnection connection) : ITargetIo
     {
-        var sql =
-            "select column_name, data_type, numeric_precision, numeric_scale, datetime_precision " +
-            $"from {Quote(database)}.information_schema.columns " +
-            $"where table_schema = {Literal(schema)} and table_name = {Literal(table)}";
+        public async Task<string> ScalarAsync(string sql, CancellationToken ct)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            var result = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+            return (string)result!;
+        }
+
+        public async Task ExecuteAsync(string sql, CancellationToken ct)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = sql;
+            await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
+        public async Task<Dictionary<string, string>> ColumnsAsync(string sql, CancellationToken ct)
+        {
         var result = new Dictionary<string, string>(StringComparer.Ordinal);
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
@@ -216,14 +253,7 @@ internal static class SfDdl
         }
 
         return result;
-    }
-
-    private static async Task<string> ScalarStringAsync(SnowflakeDbConnection connection, string sql, CancellationToken ct)
-    {
-        await using var command = connection.CreateCommand();
-        command.CommandText = sql;
-        var result = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
-        return (string)result!;
+        }
     }
 
     /// <summary>SQL string literal, single-quote-doubled -- the injection-safety pattern for a VALUE

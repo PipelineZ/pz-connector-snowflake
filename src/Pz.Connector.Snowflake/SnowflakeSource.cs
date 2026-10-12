@@ -109,6 +109,7 @@ internal sealed class SnowflakePartition(
             await connection.OpenAsync(ct).ConfigureAwait(false);
             var command = connection.CreateCommand();
             command.CommandText = selectSql;
+            // The span covers ExecuteReaderAsync, not the row streaming that follows.
             reader = (DbDataReader)await SfStatement.RunAsync(
                 remote, async () => await command.ExecuteReaderAsync(ct).ConfigureAwait(false)).ConfigureAwait(false);
         }
