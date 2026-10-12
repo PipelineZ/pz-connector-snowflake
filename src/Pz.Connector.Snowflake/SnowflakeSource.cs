@@ -2,6 +2,7 @@ using System.Data.Common;
 using System.Runtime.CompilerServices;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Sdk;
 using Snowflake.Data.Client;
 
 namespace Pz.Connector.Snowflake;
@@ -10,8 +11,10 @@ namespace Pz.Connector.Snowflake;
 /// watermark lower bound and bounded-window upper bound. PredicateSql is engine-generated and
 /// trusted raw (documented ABI trust boundary); identifiers are never trusted and go through
 /// SfDdl.Quote.</summary>
-internal sealed class SnowflakeSource(string connectionString) : ISource
+internal sealed class SnowflakeSource(string connectionString, RemoteCalls? remote = null) : ISource
 {
+    private readonly RemoteCalls _remote = remote ?? SnowflakeConnector.Unobserved;
+
     internal static string BuildSelect(DatasetSpec spec, ReadHints hints)
     {
         var query = spec.Options.TryGetValue("query", out var q) ? q?.ToString() : null;
@@ -68,7 +71,8 @@ internal sealed class SnowflakeSource(string connectionString) : ISource
             await connection.OpenAsync(ct).ConfigureAwait(false);
             await using var command = connection.CreateCommand();
             command.CommandText = probe;
-            await using var reader = (DbDataReader)await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            await using var reader = (DbDataReader)await SfStatement.RunAsync(
+                _remote, async () => await command.ExecuteReaderAsync(ct).ConfigureAwait(false)).ConfigureAwait(false);
             return new DatasetSchema(SnowflakeArrowReader.BuildSchema(reader, $"dataset '{spec.Dataset}'"));
         }
         catch (Exception ex) when (ex is not PzConnectorException and not OperationCanceledException)
@@ -85,7 +89,7 @@ internal sealed class SnowflakeSource(string connectionString) : ISource
     }
 
     public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct) =>
-        new([new SnowflakePartition(connectionString, BuildSelect(spec, hints), spec.Dataset)]);
+        new([new SnowflakePartition(connectionString, BuildSelect(spec, hints), spec.Dataset, _remote)]);
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
@@ -93,7 +97,8 @@ internal sealed class SnowflakeSource(string connectionString) : ISource
 /// <summary>One independently readable slice: opens its own connection per read (single-partition --
 /// Snowflake native scan/range partitioning is future work), wraps SnowflakeArrowReader.ReadBatchesAsync,
 /// and disposes the connection on every exit path including abandoned enumeration.</summary>
-internal sealed class SnowflakePartition(string connectionString, string selectSql, string dataset) : IDatasetPartition
+internal sealed class SnowflakePartition(
+    string connectionString, string selectSql, string dataset, RemoteCalls remote) : IDatasetPartition
 {
     public async IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
     {
@@ -104,7 +109,8 @@ internal sealed class SnowflakePartition(string connectionString, string selectS
             await connection.OpenAsync(ct).ConfigureAwait(false);
             var command = connection.CreateCommand();
             command.CommandText = selectSql;
-            reader = (DbDataReader)await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+            reader = (DbDataReader)await SfStatement.RunAsync(
+                remote, async () => await command.ExecuteReaderAsync(ct).ConfigureAwait(false)).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not PzConnectorException and not OperationCanceledException)
         {

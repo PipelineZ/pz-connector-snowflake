@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Text;
 using Apache.Arrow;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Sdk;
 using Snowflake.Data.Client;
 
 namespace Pz.Connector.Snowflake;
@@ -13,8 +14,10 @@ namespace Pz.Connector.Snowflake;
 /// so multi-statement target transactions are never relied on -- only the single commit statement
 /// ever touches the target, which is what makes Transactional an honest declaration and abort
 /// (drop temp objects + delete spool files) DiscardsAll.</summary>
-internal sealed class SnowflakeSink(string connectionString) : ISink
+internal sealed class SnowflakeSink(string connectionString, RemoteCalls? remote = null) : ISink
 {
+    private readonly RemoteCalls _remote = remote ?? SnowflakeConnector.Unobserved;
+
     private static readonly string[] SupportedModes = ["append", "replace", "merge"];
 
     public bool TryGetNativeCopy(OutputSpec spec, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out NativeCopy? copy)
@@ -64,7 +67,7 @@ internal sealed class SnowflakeSink(string connectionString) : ISink
         Directory.CreateDirectory(spoolDir);
 
         return new ValueTask<ISinkWriteSession>(
-            new SnowflakeSinkWriteSession(connectionString, spec, schema, sfSchema, table, spoolDir));
+            new SnowflakeSinkWriteSession(connectionString, spec, schema, sfSchema, table, spoolDir, _remote));
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -84,7 +87,8 @@ internal enum SnowflakeSinkSessionState
 /// failure tagged (`stage upload` / `copy into staging` / `commit statement`) so a caller can tell a
 /// transfer problem from a SQL-compilation one.</summary>
 internal sealed class SnowflakeSinkWriteSession(
-    string connectionString, OutputSpec spec, Schema schema, string sfSchema, string table, string spoolDir)
+    string connectionString, OutputSpec spec, Schema schema, string sfSchema, string table, string spoolDir,
+    RemoteCalls remote, Func<string, CancellationToken, Task>? executeOverride = null)
     : ISinkWriteSession
 {
     /// <summary>Spool files roll once the CURRENT file's compressed size exceeds this -- "~100 MB
@@ -175,6 +179,17 @@ internal sealed class SnowflakeSinkWriteSession(
             throw Wrap(ex, "commit statement");
         }
 
+        await LoadStagedAsync(qualifiedStage, qualifiedStaging, ct).ConfigureAwait(false);
+
+        _state = SnowflakeSinkSessionState.Committed;
+        return new WriteResult(_rowsWritten, _batchesWritten);
+    }
+
+    /// <summary>Steps 2-6 of the commit: every statement here goes through <see cref="ExecuteAsync"/>, so
+    /// each is counted once. Split out so the statement sequence runs against a fake executor with no
+    /// connection.</summary>
+    internal async Task LoadStagedAsync(string qualifiedStage, string qualifiedStaging, CancellationToken ct)
+    {
         // 2. Session-scoped temp stage, schema-qualified (see above). Dies with the connection, so
         // AbortAsync/DisposeAsync need no explicit drop on the paths that never reach here.
         await ExecuteAsync(SfDdl.BuildCreateStageSql(qualifiedStage), "commit statement", ct).ConfigureAwait(false);
@@ -204,9 +219,6 @@ internal sealed class SnowflakeSinkWriteSession(
             _ => throw new InvalidOperationException("unreachable: mode validated in BeginWriteAsync"),
         };
         await ExecuteAsync(targetSql, "commit statement", ct).ConfigureAwait(false);
-
-        _state = SnowflakeSinkSessionState.Committed;
-        return new WriteResult(_rowsWritten, _batchesWritten);
     }
 
     public async ValueTask AbortAsync(CancellationToken ct)
@@ -232,9 +244,7 @@ internal sealed class SnowflakeSinkWriteSession(
     {
         try
         {
-            await using var command = _connection!.CreateCommand();
-            command.CommandText = sql;
-            await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            await RunStatementAsync(sql, ct).ConfigureAwait(false);
         }
         catch (Exception)
         {
@@ -318,15 +328,27 @@ internal sealed class SnowflakeSinkWriteSession(
     {
         try
         {
-            await using var command = _connection!.CreateCommand();
-            command.CommandText = sql;
-            await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+            await RunStatementAsync(sql, ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not PzConnectorException and not OperationCanceledException)
         {
             throw Wrap(ex, phase);
         }
     }
+
+    private Task RunStatementAsync(string sql, CancellationToken ct) =>
+        SfStatement.RunAsync(remote, async () =>
+        {
+            if (executeOverride is not null)
+            {
+                await executeOverride(sql, ct).ConfigureAwait(false);
+                return;
+            }
+
+            await using var command = _connection!.CreateCommand();
+            command.CommandText = sql;
+            await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        });
 
     private PzConnectorException Wrap(Exception ex, string phase) => new(
         $"output '{spec.Output}': {phase} failed: {ex.Message}", SfErrors.IsTransient(ex), innerException: ex);

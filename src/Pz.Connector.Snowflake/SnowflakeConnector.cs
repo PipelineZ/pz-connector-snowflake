@@ -1,5 +1,7 @@
 using Snowflake.Data.Client;
+using System.Diagnostics;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Sdk;
 
 
 namespace Pz.Connector.Snowflake;
@@ -11,14 +13,22 @@ namespace Pz.Connector.Snowflake;
 /// manifest declares a project-directory anchor, so pz injects the project directory under that key
 /// and a relative <c>private_key_path</c> resolves against the project rather than against the
 /// working directory of a connector process the user never launched.</summary>
-public sealed class SnowflakeConnector : ISourceConnector, ISinkConnector
+public sealed class SnowflakeConnector(RemoteCalls remote) : ISourceConnector, ISinkConnector
 {
+    // A source nobody listens to: spans open nowhere, statement counts still reach the node's stats.
+    internal static readonly RemoteCalls Unobserved = new(new ActivitySource("pz.connector.snowflake.unobserved"));
+
+    public SnowflakeConnector() : this(Unobserved)
+    {
+    }
+
     public ConnectorInfo Info => new("snowflake", "0.1.0", ProtocolVersion.Major);
 
     public ConnectorCapabilities Capabilities => ConnectorCapabilities.ColumnPruning |
         ConnectorCapabilities.PredicatePushdown | ConnectorCapabilities.Merge |
         ConnectorCapabilities.Transactional | ConnectorCapabilities.ReplaceWrites |
-        ConnectorCapabilities.BoundedWindow | ConnectorCapabilities.InclusiveWatermarkBound;
+        ConnectorCapabilities.BoundedWindow | ConnectorCapabilities.InclusiveWatermarkBound |
+        ConnectorCapabilities.ReportsStats;
 
     public string ConnectionConfigSchema =>
         """{ "type": "object", "required": ["account","user","private_key_path","database","warehouse"], "properties": { "account": { "type": "string" }, "user": { "type": "string" }, "private_key_path": { "type": "string" }, "private_key_passphrase": { "type": "string" }, "database": { "type": "string" }, "warehouse": { "type": "string" }, "role": { "type": "string" }, "base_dir": { "type": "string" } }, "additionalProperties": false }""";
@@ -56,10 +66,10 @@ public sealed class SnowflakeConnector : ISourceConnector, ISinkConnector
     }
 
     ValueTask<ISource> ISourceConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) =>
-        new(new SnowflakeSource(BuildConnectionString(config)));
+        new(new SnowflakeSource(BuildConnectionString(config), remote));
 
     ValueTask<ISink> ISinkConnector.OpenAsync(ConnectorConfig config, CancellationToken ct) =>
-        new(new SnowflakeSink(BuildConnectionString(config)));
+        new(new SnowflakeSink(BuildConnectionString(config), remote));
 
     /// <summary>Builds the Snowflake.Data connection string via the driver's own
     /// <see cref="SnowflakeDbConnectionStringBuilder"/> (a plain <see cref="System.Data.Common.DbConnectionStringBuilder"/>
