@@ -22,7 +22,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '11.0.x'
       - run: dotnet build Pz.Connector.Snowflake.slnx -c Release
       # The acceptance suites gate on PZ_SNOWFLAKE_* env vars and SKIP without an account, so the
       # full suite runs on both legs with no credentials configured.
@@ -41,7 +41,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: '10.0.x'
+          dotnet-version: '11.0.x'
       - name: Publish the host RID and pack
         run: |
           set -euo pipefail
