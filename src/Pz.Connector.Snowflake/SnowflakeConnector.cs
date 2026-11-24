@@ -28,7 +28,7 @@ public sealed class SnowflakeConnector(RemoteCalls remote) : ISourceConnector, I
         ConnectorCapabilities.PredicatePushdown | ConnectorCapabilities.Merge |
         ConnectorCapabilities.Transactional | ConnectorCapabilities.ReplaceWrites |
         ConnectorCapabilities.BoundedWindow | ConnectorCapabilities.InclusiveWatermarkBound |
-        ConnectorCapabilities.ReportsStats;
+        ConnectorCapabilities.ReportsStats | ConnectorCapabilities.NestedTypes;
 
     public string ConnectionConfigSchema =>
         """{ "type": "object", "required": ["account","user","private_key_path","database","warehouse"], "properties": { "account": { "type": "string" }, "user": { "type": "string" }, "private_key_path": { "type": "string" }, "private_key_passphrase": { "type": "string" }, "database": { "type": "string" }, "warehouse": { "type": "string" }, "role": { "type": "string" }, "base_dir": { "type": "string" } }, "additionalProperties": false }""";
@@ -41,7 +41,7 @@ public sealed class SnowflakeConnector(RemoteCalls remote) : ISourceConnector, I
     // this property that contract would itself fail PZ0301, leaving the declared BoundedWindow
     // capability unreachable.
     public string DatasetConfigSchema =>
-        """{ "type": "object", "properties": { "query": { "type": "string" }, "columns": { "type": "object", "additionalProperties": { "enum": ["int","bigint","double","decimal","varchar","boolean","date","timestamp"] } } }, "additionalProperties": false }""";
+        """{ "type": "object", "properties": { "query": { "type": "string" }, "columns": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } } }, "additionalProperties": false }""";
 
     public ValueTask<ValidationResult> ValidateAsync(ConnectorConfig config, CancellationToken ct) =>
         new(ValidationResult.Success);

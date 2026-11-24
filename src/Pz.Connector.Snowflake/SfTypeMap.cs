@@ -20,6 +20,7 @@ internal static class SfTypeMap
             "REAL" or "FLOAT" or "DOUBLE" => DoubleType.Default,
             "TEXT" or "VARCHAR" or "STRING" or "CHAR" => StringType.Default,
             "BOOLEAN" => BooleanType.Default,
+            "ARRAY" or "OBJECT" or "VARIANT" or "MAP" => StringType.Default,
             "DATE" => Date32Type.Default,
             "TIMESTAMP_NTZ" or "TIMESTAMP_LTZ" or "TIMESTAMP_TZ" or "DATETIME" =>
                 new TimestampType(TimeUnit.Microsecond, (string?)null),
@@ -28,8 +29,17 @@ internal static class SfTypeMap
         return arrowType is not null;
     }
 
+    /// <summary>True for the Snowflake types whose values are JSON documents. The driver hands each
+    /// one over as JSON text, so a read lands them as utf8 unless a <c>columns:</c> contract declares
+    /// a nested type for the column.</summary>
+    public static bool IsSemiStructured(string snowflakeTypeName) =>
+        snowflakeTypeName.ToUpperInvariant() is "ARRAY" or "OBJECT" or "VARIANT" or "MAP";
+
+    /// <summary>Nested Arrow columns are stored as VARIANT: the spool carries each cell as JSON text
+    /// and the load parses it (<see cref="SfDdl.BuildCopyIntoStagingSql"/>).</summary>
     public static string ToSnowflakeDdl(IArrowType type) => type switch
     {
+        NestedType => "VARIANT",
         Int64Type => "BIGINT",
         Int32Type => "INTEGER",
         DoubleType => "DOUBLE",
@@ -66,6 +76,7 @@ internal static class SfTypeMap
     /// </list></summary>
     public static string ToInformationSchemaDisplay(IArrowType type) => type switch
     {
+        NestedType => "VARIANT",
         Int64Type or Int32Type => "NUMBER(38,0)",
         Decimal128Type d => $"NUMBER({d.Precision},{d.Scale})",
         DoubleType => "FLOAT",

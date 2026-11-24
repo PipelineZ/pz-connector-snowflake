@@ -1,6 +1,7 @@
 using System.IO.Compression;
 using System.Text;
 using Apache.Arrow;
+using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Sdk;
 using Snowflake.Data.Client;
@@ -46,6 +47,18 @@ internal sealed class SnowflakeSink(string connectionString, RemoteCalls? remote
                 throw new PzConnectorException(
                     $"output '{spec.Output}': merge key column(s) [{string.Join(", ", missingKeys)}] are " +
                     "not present in the write schema", isTransient: false);
+            }
+
+            var nestedKeys = schema.FieldsList
+                .Where(f => f.DataType is NestedType && spec.Keys.Contains(f.Name, StringComparer.Ordinal))
+                .Select(f => f.Name).ToArray();
+            if (nestedKeys.Length > 0)
+            {
+                throw new PzConnectorException(
+                    $"output '{spec.Output}': merge key column(s) [{string.Join(", ", nestedKeys)}] are " +
+                    "struct/list/map columns -- a merge key must be a flat value; hint: key on a scalar " +
+                    "column, or extract a scalar from the nested column in the pipeline SQL",
+                    isTransient: false);
             }
 
             if (fieldNames.Contains(SfDdl.StagingSequenceColumn))

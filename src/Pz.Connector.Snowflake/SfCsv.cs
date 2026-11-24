@@ -3,6 +3,7 @@ using System.Text;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Abstractions.Batches;
 
 namespace Pz.Connector.Snowflake;
 
@@ -88,6 +89,12 @@ internal static class SfCsv
         if (array.IsNull(row))
         {
             line.Append(NullToken);
+            return;
+        }
+
+        if (array.Data.DataType is NestedType)
+        {
+            AppendQuotedString(line, ArrowCell.ToJson(array, row));
             return;
         }
 

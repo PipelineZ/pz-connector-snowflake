@@ -43,7 +43,7 @@ public class SnowflakeArrowReaderTests
     [Fact]
     public void Unmapped_type_names_the_column_with_a_hint()
     {
-        var reader = new FakeDbDataReader([("payload", "VARIANT", typeof(string))], []);
+        var reader = new FakeDbDataReader([("payload", "GEOGRAPHY", typeof(string))], []);
         var ex = Assert.Throws<PzConnectorException>(() => SnowflakeArrowReader.BuildSchema(reader, "dataset 'x'"));
         Assert.False(ex.IsTransient);
         Assert.Contains("payload", ex.Message);
