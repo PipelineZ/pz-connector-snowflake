@@ -39,9 +39,6 @@ public class SfTypeMapTests
     }
 
     [Theory]
-    [InlineData("VARIANT")]
-    [InlineData("ARRAY")]
-    [InlineData("OBJECT")]
     [InlineData("GEOGRAPHY")]
     [InlineData("BINARY")]
     [InlineData("TIME")]

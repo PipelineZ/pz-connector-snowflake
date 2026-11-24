@@ -73,7 +73,8 @@ internal sealed class SnowflakeSource(string connectionString, RemoteCalls? remo
             command.CommandText = probe;
             await using var reader = (DbDataReader)await SfStatement.RunAsync(
                 _remote, async () => await command.ExecuteReaderAsync(ct).ConfigureAwait(false)).ConfigureAwait(false);
-            return new DatasetSchema(SnowflakeArrowReader.BuildSchema(reader, $"dataset '{spec.Dataset}'"));
+            return new DatasetSchema(SnowflakeArrowReader.BuildSchema(
+                reader, $"dataset '{spec.Dataset}'", SnowflakeArrowReader.NestedContract(spec.Options)));
         }
         catch (Exception ex) when (ex is not PzConnectorException and not OperationCanceledException)
         {
@@ -89,7 +90,8 @@ internal sealed class SnowflakeSource(string connectionString, RemoteCalls? remo
     }
 
     public ValueTask<IReadOnlyList<IDatasetPartition>> PlanReadAsync(DatasetSpec spec, ReadHints hints, CancellationToken ct) =>
-        new([new SnowflakePartition(connectionString, BuildSelect(spec, hints), spec.Dataset, _remote)]);
+        new([new SnowflakePartition(connectionString, BuildSelect(spec, hints), spec.Dataset, _remote,
+            SnowflakeArrowReader.NestedContract(spec.Options))]);
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }
@@ -98,7 +100,8 @@ internal sealed class SnowflakeSource(string connectionString, RemoteCalls? remo
 /// Snowflake native scan/range partitioning is future work), wraps SnowflakeArrowReader.ReadBatchesAsync,
 /// and disposes the connection on every exit path including abandoned enumeration.</summary>
 internal sealed class SnowflakePartition(
-    string connectionString, string selectSql, string dataset, RemoteCalls remote) : IDatasetPartition
+    string connectionString, string selectSql, string dataset, RemoteCalls remote,
+    IReadOnlyDictionary<string, Apache.Arrow.Types.IArrowType>? nested = null) : IDatasetPartition
 {
     public async IAsyncEnumerable<RecordBatch> ReadAsync(BatchOptions options, [EnumeratorCancellation] CancellationToken ct)
     {
@@ -119,7 +122,7 @@ internal sealed class SnowflakePartition(
                 $"dataset '{dataset}': read failed: {ex.Message}", SfErrors.IsTransient(ex), innerException: ex);
         }
 
-        var enumerator = SnowflakeArrowReader.ReadBatchesAsync(reader, options, ct).GetAsyncEnumerator(ct);
+        var enumerator = SnowflakeArrowReader.ReadBatchesAsync(reader, options, ct, nested).GetAsyncEnumerator(ct);
         try
         {
             while (true)

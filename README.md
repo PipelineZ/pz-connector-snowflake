@@ -229,6 +229,7 @@ is no `columns:` write option on this connector to override sizing or type per c
 | `BOOLEAN` | `Boolean` |
 | `DATE` | `Date32` |
 | `TIMESTAMP_NTZ`, `TIMESTAMP_LTZ`, `TIMESTAMP_TZ`, `DATETIME` | `Timestamp(µs, no zone)` |
+| `ARRAY`, `OBJECT`, `MAP`, `VARIANT` | `Utf8` (JSON text), or the nested type a `columns:` contract declares |
 
 An unrecognized source type fails schema resolution loudly, naming the column and hinting a
 `query:`-side cast or a `columns:` exclusion, rather than falling back to a lossy default. On the
@@ -236,6 +237,21 @@ sink side, a `Decimal128` value at the high end of the v0 matrix's precision (up
 be too wide for the CLR `decimal` (96-bit) the CSV writer renders it through; that overflow is caught
 and reported as a named write error, not left to surface as a raw, columnless
 `OverflowException` — same pattern as the read side's own decimal128-overflow guard.
+
+### Nested columns
+
+**Read.** The driver reports `ARRAY`, `OBJECT`, `MAP` and `VARIANT` columns as JSON text and does not
+expose the element types of structured `ARRAY(T)`/`OBJECT(...)`/`MAP(K, V)` columns, so a read lands
+them as `Utf8` JSON unless the dataset declares a nested type in `columns:`
+(`varchar[]`, `struct(name varchar, tags varchar[])`, `map(varchar, bigint)`); the JSON is then parsed
+into a typed list, struct or map. A value that does not fit the declared type fails the read naming
+the column, never the value. These columns used to fail schema resolution as unsupported; they no
+longer do (a read that failed before now succeeds, so no existing successful read changes).
+
+**Write.** The sink declares `NestedTypes`. A struct, list or map column is spooled as JSON text,
+parsed with `parse_json` during the COPY, and stored as `VARIANT` (also the type `schema_policy:
+fail_on_change` expects of an existing target column). A nested column cannot be a merge key: the
+write is refused at validation naming the column ("a merge key must be a flat value").
 
 ## Errors and retries
 

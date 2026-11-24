@@ -1,5 +1,6 @@
 using System.Text;
 using Apache.Arrow;
+using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
 using Pz.Connectors.Sdk;
 using Snowflake.Data.Client;
@@ -110,7 +111,12 @@ internal static class SfDdl
         string qualifiedStaging, string qualifiedStage, Schema arrowSchema, bool includeSequenceColumn)
     {
         var csvColumnCount = arrowSchema.FieldsList.Count + (includeSequenceColumn ? 1 : 0);
-        var positions = string.Join(", ", Enumerable.Range(1, csvColumnCount).Select(i => $"${i}"));
+        // A nested column's cell is JSON text in the spool; parse_json turns it into the VARIANT the
+        // staging column holds (a NULL cell stays NULL).
+        var positions = string.Join(", ", Enumerable.Range(1, csvColumnCount).Select(i =>
+            i <= arrowSchema.FieldsList.Count && arrowSchema.FieldsList[i - 1].DataType is NestedType
+                ? $"parse_json(${i})"
+                : $"${i}"));
         var copyColumnNames = arrowSchema.FieldsList.Select(f => Quote(f.Name));
         if (includeSequenceColumn)
         {

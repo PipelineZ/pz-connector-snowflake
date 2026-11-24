@@ -4,6 +4,8 @@ using System.Text;
 using Apache.Arrow;
 using Apache.Arrow.Types;
 using Pz.Connectors.Abstractions;
+using Pz.Connectors.Abstractions.Batches;
+using Pz.Connectors.Abstractions.Formats;
 using Pz.Connectors.Abstractions.Memory;
 
 namespace Pz.Connector.Snowflake;
@@ -22,12 +24,58 @@ namespace Pz.Connector.Snowflake;
 /// TimestampType, so the appender is chosen from the reader's reported CLR type, not the type name.</summary>
 internal static class SnowflakeArrowReader
 {
-    public static Schema BuildSchema(DbDataReader reader, string subject)
+    /// <summary>The nested types a dataset's <c>columns:</c> contract declares, by column name. Only a
+    /// nested declaration changes a read; a flat one is ignored (the driver's own metadata types it).
+    /// Option values arrive as a string map or, from a generic caller, an object map.</summary>
+    public static IReadOnlyDictionary<string, IArrowType> NestedContract(IReadOnlyDictionary<string, object?> options)
+    {
+        var result = new Dictionary<string, IArrowType>(StringComparer.Ordinal);
+        if (!options.TryGetValue("columns", out var raw))
+        {
+            return result;
+        }
+
+        IEnumerable<KeyValuePair<string, string?>> declared = raw switch
+        {
+            IReadOnlyDictionary<string, string> m => m.Select(kv => new KeyValuePair<string, string?>(kv.Key, kv.Value)),
+            IReadOnlyDictionary<string, object?> m => m.Select(kv => new KeyValuePair<string, string?>(kv.Key, kv.Value?.ToString())),
+            _ => [],
+        };
+        foreach (var (name, text) in declared)
+        {
+            if (text is not null && ColumnContractType.IsNested(text))
+            {
+                result[name] = ColumnContractType.ToArrowType(text, name);
+            }
+        }
+
+        return result;
+    }
+
+    public static Schema BuildSchema(DbDataReader reader, string subject,
+        IReadOnlyDictionary<string, IArrowType>? nested = null)
     {
         var fields = new List<Field>(reader.FieldCount);
         foreach (var column in reader.GetColumnSchema())
         {
             var typeName = column.DataTypeName ?? "<unknown>";
+            if (nested is not null && nested.TryGetValue(column.ColumnName, out var declared))
+            {
+                if (!SfTypeMap.IsSemiStructured(typeName) &&
+                    !string.Equals(typeName, "TEXT", StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(typeName, "VARCHAR", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new PzConnectorException(
+                        $"'{subject}': column '{column.ColumnName}' has Snowflake type '{typeName}' and cannot " +
+                        "be read as a nested type -- hint: declare a nested columns: type only for an " +
+                        "ARRAY, OBJECT, MAP or VARIANT column (or JSON text in a VARCHAR)",
+                        isTransient: false);
+                }
+
+                fields.Add(new Field(column.ColumnName, declared, nullable: true));
+                continue;
+            }
+
             var (precision, scale) = ResolvePrecisionScale(column);
             if (!SfTypeMap.TryResolve(typeName, precision, scale, out var arrowType))
             {
@@ -70,9 +118,10 @@ internal static class SnowflakeArrowReader
     }
 
     public static async IAsyncEnumerable<RecordBatch> ReadBatchesAsync(
-        DbDataReader reader, BatchOptions options, [EnumeratorCancellation] CancellationToken ct = default)
+        DbDataReader reader, BatchOptions options, [EnumeratorCancellation] CancellationToken ct = default,
+        IReadOnlyDictionary<string, IArrowType>? nested = null)
     {
-        var schema = BuildSchema(reader, "read");
+        var schema = BuildSchema(reader, "read", nested);
         var plans = BuildColumnPlans(reader, schema);
         var pendingRows = 0;
         var bytesEstimate = 0d;
@@ -129,6 +178,7 @@ internal static class SnowflakeArrowReader
             var clrType = columns[i].DataType;
             plans[i] = schema.FieldsList[i].DataType switch
             {
+                NestedType nestedType => PlanNested(schema.FieldsList[i], nestedType, reader, ordinal),
                 Int32Type => Plan<Int32Array, Int32Array.Builder>(new Int32Array.Builder(), allocator,
                     b => b.Append(checked((int)reader.GetFieldValue<long>(ordinal))), _ => 4d, reader, ordinal),
                 Int64Type => Plan<Int64Array, Int64Array.Builder>(new Int64Array.Builder(), allocator,
@@ -194,6 +244,41 @@ internal static class SnowflakeArrowReader
                 builder.Clear();
                 return array;
             });
+
+    /// <summary>A contract-declared nested column: the cell's JSON text is parsed against the declared
+    /// type and appended through a one-column <see cref="ArrowBatchBuilder"/>. A cell that does not fit
+    /// the declared type fails naming the column, never echoing the value.</summary>
+    private static ColumnPlan PlanNested(Field field, NestedType type, DbDataReader reader, int ordinal)
+    {
+        var builder = new ArrowBatchBuilder(new Schema([field], null), int.MaxValue, maxRowsPerBatch: int.MaxValue);
+        return new ColumnPlan(
+            Append: () =>
+            {
+                if (reader.IsDBNull(ordinal))
+                {
+                    builder.AppendRow([null]);
+                    return 0d;
+                }
+
+                var json = reader.GetFieldValue<string>(ordinal);
+                object? value;
+                try
+                {
+                    value = ColumnContractType.ValueFromJson(json, type);
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or FormatException or System.Text.Json.JsonException)
+                {
+                    throw new PzConnectorException(
+                        $"column '{field.Name}': a value does not match the declared type '{type.Name}' " +
+                        "-- hint: fix the type in columns:, or cast the column to varchar in query:",
+                        isTransient: false, innerException: ex);
+                }
+
+                builder.AppendRow([value]);
+                return 4d + Encoding.UTF8.GetByteCount(json);
+            },
+            BuildAndReset: () => builder.Flush()!.Column(0));
+    }
 
     private static ColumnPlan PlanUtf8(
         Apache.Arrow.Memory.MemoryAllocator allocator, DbDataReader reader, int ordinal,

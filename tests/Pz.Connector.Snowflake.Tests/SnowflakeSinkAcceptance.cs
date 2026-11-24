@@ -24,6 +24,7 @@ public sealed class SnowflakeSinkAcceptance : SinkConnectorAcceptanceTests
     private const string SmallTable = "PZ_TESTKIT.SINK_ACCEPT_SMALL";
     private const string MergeTable = "PZ_TESTKIT.SINK_ACCEPT_MERGE";
     private const string ReplaceTable = "PZ_TESTKIT.SINK_ACCEPT_REPLACE";
+    private const string NestedTable = "PZ_TESTKIT.SINK_ACCEPT_NESTED";
 
     protected override void GateFact() => SnowflakeFacts.SkipUnlessConfigured();
 
@@ -38,6 +39,9 @@ public sealed class SnowflakeSinkAcceptance : SinkConnectorAcceptanceTests
         new Dictionary<string, object?>()) { Keys = ["id"] };
 
     protected override OutputSpec? ReplaceOutput => new("sf", ReplaceTable, "replace", "fail_on_change",
+        new Dictionary<string, object?>());
+
+    protected override OutputSpec? NestedOutput => new("sf", NestedTable, "replace", "fail_on_change",
         new Dictionary<string, object?>());
 
     // The merge target is a real, physically-persistent table in the test account (unlike the
